@@ -5,3 +5,4 @@ logs/
 tampermonkey/
 tervek/
 cache/
+examples/*.html

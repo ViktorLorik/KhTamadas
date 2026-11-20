@@ -17,6 +17,7 @@ import { loadPlan, checkPlan, unitsText } from './plan.js';
 import { createClock, waitUntil } from './precise.js';
 import { notify } from './notify.js';
 import { loadWorld } from './world.js';
+import { buildDashboardData, renderDashboard } from './html.js';
 
 function printVillages(log, world, name) {
   if (!world) { log.error('A falulistához a világ adatai kellenek (a terv "server" mezője, --offline nélkül).'); return 1; }
@@ -30,7 +31,7 @@ function printVillages(log, world, name) {
 }
 
 function parseArgs(argv) {
-  const o = { plan: null, check: false, shift: null, speed: 1, notify: false, warn: '2m,15s', offline: false, refresh: false, villages: null };
+  const o = { plan: null, check: false, shift: null, speed: 1, notify: false, warn: '2m,15s', offline: false, refresh: false, villages: null, html: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next = () => {
@@ -46,6 +47,7 @@ function parseArgs(argv) {
     else if (a === '--warn') o.warn = next();
     else if (a === '--offline') o.offline = true;
     else if (a === '--refresh') o.refresh = true;
+    else if (a === '--html') o.html = argv[i + 1] && !argv[i + 1].startsWith('-') ? argv[++i] : '';
     else if (a === '--villages') o.villages = argv[i + 1] && !argv[i + 1].startsWith('-') ? argv[++i] : '';
     else throw new Error(`Ismeretlen kapcsoló terv módban: ${a}`);
   }
@@ -123,6 +125,14 @@ export async function main(argv) {
   printSchedule(log, commands);
   log.title(`Ellenőrzés${world ? ' (a világ hivatalos adataival)' : ''}`);
   printIssues(log, issues);
+
+  if (opts.html !== null) {
+    const out = resolve(opts.html || planPath.replace(/.json$/i, '') + '.html');
+    writeFileSync(out, renderDashboard(buildDashboardData(plan, issues, world)), 'utf8');
+    log.ok(`✓ Indítópult elkészült: ${out}`);
+    log.detail('  Nyisd meg a böngészőben (dupla kattintás). Az oldal semmit nem küld.');
+    return 0;
+  }
   if (opts.check) return 0;
 
   // --- Idővonal: virtuális (terv szerinti) idő ↔ valós idő ---

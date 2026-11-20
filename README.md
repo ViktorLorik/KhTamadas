@@ -89,6 +89,7 @@ Egy időzített terv (pl. `examples/terv.example.json`) minden indítását **ez
 
 ```bat
 start.cmd --plan tervek\terv.json --check           :: ellenőrzés + menetrend
+start.cmd --plan tervek\terv.json --html            :: indítópult: tervek\terv.html (böngészőben megnyitható)
 start.cmd --plan tervek\terv.json --villages        :: a terv játékosának falvai (nyilvános világadatokból)
 start.cmd --plan tervek\terv.json --villages valaki :: más játékos falvai
 start.cmd --plan tervek\terv.json                   :: valós idejű lejátszás a terv időpontjaiban
@@ -109,6 +110,8 @@ start.cmd --plan tervek\terv.json --shift 10s --speed 600   :: próba: 10 mp mú
 **Ellenőrzés:** a világ nyilvános adataiból (falvak, játékosok, egységsebesség, éjszakai bónusz) újraszámolja a menetidőket. Ha egy parancs a kerekítés miatt egy másodperccel később érkezne, kiírja a helyes indítási időt. Megnézi a falvak tulajdonosát és azonosítóját, azt, hogy egy célpontra minden parancs ugyanabban a másodpercben érkezik-e, és hogy a nukeok a nemesek előtt érnek-e oda. A nyilvános adatokat óránként legfeljebb egyszer tölti le, a `cache/` mappába. Ezekhez nem kell bejelentkezni, és bejelentkezést a program nem is végez.
 
 **Pontos időzítés (`src/plan/precise.js`):** a `setTimeout` Windowson akár ~15 ms-ot is késhet. Ezért a program a cél előtt 30 ms-mal „felébred”, és onnan `setImmediate`-tel, a monoton `performance.now()` órát figyelve várja ki a célpillanatot. Mért eredmény: 0,0–0,7 ms eltérés, egy vonat egymás utáni részei között kb. 0,2 ms.
+
+**Indítópult (`--html`):** egyetlen önálló HTML-fájl, szerver nélkül megnyitható. Élő órát mutat ms-pontossággal, parancsonként visszaszámlál, és 2 perccel, illetve 15 másodperccel az indítás előtt hanggal és villogó címmel figyelmeztet. A „Megnyitás” gomb a megfelelő falu Gyülekezőhelyét nyitja meg a célkoordinátákkal. A „Kiment” pipa állapota a böngészőben marad meg. Az óra-eltérés a játék szerveridejéhez igazítható. Az oldal semmit nem küld.
 
 **Riport:** minden futás végén a `logs/terv-<időpont>.json` fájlba kerül a tervezett és a tényleges idő és az eltérés statisztikája.
 
@@ -135,5 +138,6 @@ src/plan/plan.js    terv beolvasása és ellenőrzése (menetidők, sorrend, fal
 src/plan/precise.js ezredmásodperc-pontos várakozás
 src/plan/world.js   a világ nyilvános adatai (village/player/ally.txt, config, unit_info) gyorsítótárral
 src/plan/notify.js  Windows-értesítés
+src/plan/html.js    önálló HTML indítópult generálása
 examples/           kitalált példaterv
 ```
