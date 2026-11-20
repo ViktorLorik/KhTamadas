@@ -1,0 +1,125 @@
+{
+  "plan": "Példa terv (kitalált adatok)",
+  "timezone": "Europe/Budapest (UTC+01:00)",
+  "assumptions": {
+    "speed_seconds_per_field": {
+      "ram": 1666.667,
+      "catapult": 1666.667,
+      "snob": 1944.444
+    },
+    "travel_time_formula": "round(sqrt(dx^2+dy^2) * seconds_per_field)",
+    "night_bonus": "23:00–07:00",
+    "arrival_rule": "egy célpontra minden parancs ugyanabban a másodpercben; nuke .100, nemesvonat .600"
+  },
+  "targets": [
+    {
+      "key": "A",
+      "coord": "455|462",
+      "role": "nemesítés",
+      "name": "Célfalu",
+      "id": null
+    }
+  ],
+  "commands": [
+    {
+      "order": 1,
+      "role": "nuke_1",
+      "type": "attack",
+      "source": {
+        "name": "01 Észak",
+        "id": null,
+        "coord": "450|450"
+      },
+      "target": {
+        "coord": "455|462",
+        "name": "Célfalu",
+        "id": null
+      },
+      "units": {
+        "axe": 6000,
+        "spy": 50,
+        "light": 2500,
+        "ram": 300
+      },
+      "slowest_unit": "ram",
+      "travel_seconds": 21667,
+      "arrival": "2026-12-01T09:30:00.100+01:00",
+      "launch": "2026-12-01T03:28:53.100+01:00"
+    },
+    {
+      "order": 2,
+      "role": "noble_train",
+      "type": "attack",
+      "source": {
+        "name": "02 Kelet",
+        "id": null,
+        "coord": "462|455"
+      },
+      "target": {
+        "coord": "455|462",
+        "name": "Célfalu",
+        "id": null
+      },
+      "train": [
+        {
+          "noble": 1,
+          "units": {
+            "axe": 5000,
+            "light": 2000,
+            "snob": 1
+          }
+        },
+        {
+          "noble": 2,
+          "units": {
+            "axe": 100,
+            "snob": 1
+          }
+        },
+        {
+          "noble": 3,
+          "units": {
+            "axe": 100,
+            "snob": 1
+          }
+        },
+        {
+          "noble": 4,
+          "units": {
+            "axe": 100,
+            "snob": 1
+          }
+        }
+      ],
+      "slowest_unit": "snob",
+      "travel_seconds": 19249,
+      "arrival": "2026-12-01T09:30:00.600+01:00",
+      "launch": "2026-12-01T04:09:11.600+01:00"
+    },
+    {
+      "order": 3,
+      "role": "nuke_2",
+      "type": "attack",
+      "source": {
+        "name": "03 Dél",
+        "id": null,
+        "coord": "452|470"
+      },
+      "target": {
+        "coord": "455|462",
+        "name": "Célfalu",
+        "id": null
+      },
+      "units": {
+        "axe": 6000,
+        "spy": 10,
+        "light": 2500,
+        "ram": 300
+      },
+      "slowest_unit": "ram",
+      "travel_seconds": 14240,
+      "arrival": "2026-12-01T09:30:00.300+01:00",
+      "launch": "2026-12-01T05:32:40.300+01:00"
+    }
+  ]
+}

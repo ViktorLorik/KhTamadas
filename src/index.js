@@ -16,6 +16,12 @@ import { Scheduler } from './scheduler.js';
 import { startServer } from './server.js';
 import { formatDateTime, formatRelative } from './util.js';
 
+// Terv mód (tervszimulátor) – külön belépési pont
+if (process.argv.includes('--plan') || process.argv.includes('-p')) {
+  const { main } = await import('./plan/cli.js');
+  process.exit(await main(process.argv.slice(2)));
+}
+
 function parseArgs(argv) {
   const opts = { config: 'jobs.json', mode: 'serve', job: null };
   for (let i = 0; i < argv.length; i++) {
@@ -37,6 +43,9 @@ Request Scheduler – időzített HTTP kérések JSON alapján
   node src/index.js [jobs.json] --list       jobok és következő futásaik
   node src/index.js [jobs.json] --check      konfiguráció ellenőrzése
   node src/index.js [jobs.json] --run <név>  egy job azonnali futtatása
+
+  node src/index.js --plan <terv.json> [--check|--villages|--shift 10s|--speed 600|--notify]
+                                             tervszimulátor (semmit nem küld ki)
 
 Részletek: README.md
 `;

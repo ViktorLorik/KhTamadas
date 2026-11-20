@@ -8,8 +8,9 @@
   "scripts": {
     "start": "node src/index.js jobs.json",
     "list": "node src/index.js jobs.json --list",
-    "check": "node src/index.js jobs.json --check"
+    "check": "node src/index.js jobs.json --check",
+    "plan:demo": "node src/index.js --plan examples/terv.example.json --shift 3s --speed 1500 --warn none"
   },
-  "engines": { "node": ">=18" },
+  "engines": { "node": ">=20" },
   "license": "MIT"
 }

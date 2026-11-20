@@ -83,6 +83,37 @@ Minden időpont a gép helyi ideje szerint értendő. Ha a gép aludt, és leké
 
 Ha egy mező értéke egyetlen helyőrző (`"id": "{{uid}}"`), a típusa megmarad (szám marad szám). Az ismeretlen változókra figyelmeztet a napló.
 
+## Tervszimulátor (`--plan`)
+
+Egy időzített terv (pl. `examples/terv.example.json`) minden indítását **ezredmásodperc-pontosan** lejátssza. Az indítás pillanatában a program naplóz („itt ment volna ki”), és kérésre Windows-értesítést küld. **Semmit nem küld ki semmilyen rendszernek.**
+
+```bat
+start.cmd --plan tervek\terv.json --check           :: ellenőrzés + menetrend
+start.cmd --plan tervek\terv.json --villages        :: a terv játékosának falvai (nyilvános világadatokból)
+start.cmd --plan tervek\terv.json --villages valaki :: más játékos falvai
+start.cmd --plan tervek\terv.json                   :: valós idejű lejátszás a terv időpontjaiban
+start.cmd --plan tervek\terv.json --notify          :: ugyanez Windows-értesítéssel
+start.cmd --plan tervek\terv.json --shift 10s --speed 600   :: próba: 10 mp múlva indul, 600× gyorsítva
+```
+
+| Kapcsoló | Jelentés |
+|---|---|
+| `--check` | csak ellenőrzés |
+| `--shift 10s` | az egész tervet eltolja, hogy az első indítás ennyi idő múlva legyen |
+| `--speed 600` | gyorsítás (a pontosságot valós ms-ban méri) |
+| `--warn 2m,15s` | előfigyelmeztetések (alapból 2m,15s; `none` = nincs) |
+| `--notify` | Windows-értesítés figyelmeztetéskor és indításkor |
+| `--offline` | ne töltse le a világadatokat (a terv feltevéseivel számol) |
+| `--refresh` | a világadatok újratöltése az egyórás gyorsítótár ellenére |
+
+**Ellenőrzés:** a világ nyilvános adataiból (falvak, játékosok, egységsebesség, éjszakai bónusz) újraszámolja a menetidőket. Ha egy parancs a kerekítés miatt egy másodperccel később érkezne, kiírja a helyes indítási időt. Megnézi a falvak tulajdonosát és azonosítóját, azt, hogy egy célpontra minden parancs ugyanabban a másodpercben érkezik-e, és hogy a nukeok a nemesek előtt érnek-e oda. A nyilvános adatokat óránként legfeljebb egyszer tölti le, a `cache/` mappába. Ezekhez nem kell bejelentkezni, és bejelentkezést a program nem is végez.
+
+**Pontos időzítés (`src/plan/precise.js`):** a `setTimeout` Windowson akár ~15 ms-ot is késhet. Ezért a program a cél előtt 30 ms-mal „felébred”, és onnan `setImmediate`-tel, a monoton `performance.now()` órát figyelve várja ki a célpillanatot. Mért eredmény: 0,0–0,7 ms eltérés, egy vonat egymás utáni részei között kb. 0,2 ms.
+
+**Riport:** minden futás végén a `logs/terv-<időpont>.json` fájlba kerül a tervezett és a tényleges idő és az eltérés statisztikája.
+
+A valódi tervek a `tervek/` mappába valók; ez a mappa nem kerül be a repóba (`.gitignore`).
+
 ## Folyamatos futtatás Windowson
 
 - **Kézzel:** `start.cmd`, és nyitva hagyod az ablakot.
@@ -99,4 +130,10 @@ src/cron.js       cron-értelmező
 src/template.js   {{változó}} behelyettesítés
 src/server.js     státusz HTTP-felület
 src/config.js     jobs.json ellenőrzés, érthető hibaüzenetekkel
+src/plan/cli.js     tervszimulátor: idővonal, eltolás/gyorsítás, visszaszámláló, riport
+src/plan/plan.js    terv beolvasása és ellenőrzése (menetidők, sorrend, falvak)
+src/plan/precise.js ezredmásodperc-pontos várakozás
+src/plan/world.js   a világ nyilvános adatai (village/player/ally.txt, config, unit_info) gyorsítótárral
+src/plan/notify.js  Windows-értesítés
+examples/           kitalált példaterv
 ```

@@ -30,6 +30,18 @@ export function formatTime(d) {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+/** HH:mm:ss.SSS */
+export function formatTimeMs(d) {
+  return `${formatTime(d)}.${pad(d.getMilliseconds(), 3)}`;
+}
+
+/** 3725 mp → "1:02:05" */
+export function formatClock(totalSeconds) {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const h = Math.floor(s / 3600);
+  return `${h}:${pad(Math.floor((s % 3600) / 60))}:${pad(s % 60)}`;
+}
+
 export function formatDateTime(d) {
   return d ? `${formatDate(d)} ${formatTime(d)}` : '—';
 }
