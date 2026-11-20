@@ -1,0 +1,82 @@
+{
+  "server": { "port": 3030 },
+
+  "defaults": {
+    "timeout": "30s",
+    "retries": 2,
+    "retryDelay": "10s",
+    "logResponseBody": 300,
+    "headers": { "User-Agent": "request-scheduler/1.0" }
+  },
+
+  "variables": {
+    "baseUrl": "https://httpbin.org"
+  },
+
+  "jobs": [
+    {
+      "name": "demo-percenkent",
+      "description": "Bemutató: percenként egy GET kérés. Ha már nem kell, állítsd \"enabled\": false-ra.",
+      "enabled": true,
+      "runOnStart": true,
+      "schedule": { "every": "1m" },
+      "requests": [
+        { "method": "GET", "url": "{{baseUrl}}/get", "query": { "kuldve": "{{now}}" } }
+      ]
+    },
+
+    {
+      "name": "reggeli-sorozat",
+      "description": "Hétköznap 8:00 és 12:30: bejelentkezés, a kapott tokennel lekérdezés, végül jelentés küldése.",
+      "enabled": false,
+      "schedule": { "daily": ["08:00", "12:30"], "days": ["mon", "tue", "wed", "thu", "fri"] },
+      "variables": { "felhasznalo": "viktor" },
+      "requests": [
+        {
+          "name": "login",
+          "method": "POST",
+          "url": "{{baseUrl}}/post",
+          "body": { "username": "{{felhasznalo}}", "password": "{{env.API_JELSZO}}" },
+          "save": { "token": "body.json.username" },
+          "delayAfter": "2s"
+        },
+        {
+          "name": "lekerdezes",
+          "method": "GET",
+          "url": "{{baseUrl}}/bearer",
+          "headers": { "Authorization": "Bearer {{token}}" }
+        },
+        {
+          "name": "jelentes",
+          "method": "POST",
+          "url": "{{baseUrl}}/post",
+          "body": {
+            "datum": "{{date}}",
+            "elozo_statusz": "{{responses.lekerdezes.status}}",
+            "azonosito": "{{uuid}}"
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "egyszeri-kuldes",
+      "description": "Pontosan egyszer, egy megadott időpontban (vagy több időpontban, ha tömböt adsz meg).",
+      "enabled": false,
+      "schedule": { "at": ["2026-11-21 09:00", "2026-11-28 09:00"] },
+      "requests": [
+        { "method": "POST", "url": "{{baseUrl}}/post", "form": { "uzenet": "Szia!", "ido": "{{time}}" } }
+      ]
+    },
+
+    {
+      "name": "cron-pelda",
+      "description": "Cron szintaxis: minden hónap 1-jén 6:15-kor.",
+      "enabled": false,
+      "schedule": { "cron": "15 6 1 * *" },
+      "requests": [
+        { "method": "DELETE", "url": "{{baseUrl}}/delete", "expectStatus": [200, 204] }
+      ]
+    }
+  ]
+}

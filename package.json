@@ -1,0 +1,15 @@
+{
+  "name": "request-scheduler",
+  "version": "1.0.0",
+  "description": "Előre megadott időpontokban HTTP kéréseket (vagy kéréssorozatokat) küld egy JSON fájl alapján.",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": { "request-scheduler": "src/index.js" },
+  "scripts": {
+    "start": "node src/index.js jobs.json",
+    "list": "node src/index.js jobs.json --list",
+    "check": "node src/index.js jobs.json --check"
+  },
+  "engines": { "node": ">=18" },
+  "license": "MIT"
+}
