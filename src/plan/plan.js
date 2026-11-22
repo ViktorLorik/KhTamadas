@@ -2,7 +2,7 @@
 // A terv csak adat: ez a modul semmilyen külső rendszerrel nem kommunikál.
 
 import { readFileSync } from 'node:fs';
-import { formatTimeMs } from '../util.js';
+import { formatDate, formatTimeMs } from '../util.js';
 
 export const UNIT_NAMES = {
   spear: 'lándzsás', sword: 'kardforgató', axe: 'bárdos', archer: 'íjász', spy: 'kém',
@@ -17,6 +17,40 @@ export const ROLE_NAMES = {
 
 export const unitsText = (units) =>
   Object.entries(units).map(([k, n]) => `${n} ${UNIT_NAMES[k] ?? k}`).join(', ');
+
+export const roleNameOf = (role) =>
+  ROLE_NAMES[role] ?? (/^nuke(_\d+)?$/.test(role ?? '') ? 'nuke' : role) ?? 'parancs';
+
+// Az egységek alap-menetideje (perc/mező). A világ sebessége mindegyiket ugyanúgy szorozza,
+// ezért a sorrendjük minden világon azonos (ehhez nem kellenek a világadatok).
+export const BASE_MINUTES = { spear: 18, sword: 22, axe: 18, archer: 18, spy: 9, light: 10, marcher: 10, heavy: 11, ram: 30, catapult: 30, knight: 10, snob: 35 };
+const NEVER_IN_SEND_ALL = ['snob', 'knight'];
+
+/**
+ * "Minden otthoni egység" szabály egy parancsra: a terv leglassabb egysége (slowest_unit, különben a
+ * terv egységei közül a leglassabb), és az egységek, amik vele mehetnek (nemes, lovag soha; a nála
+ * lassabb sem, mert az eltolná az érkezést). null, ha a parancs nem ilyen.
+ */
+export function sendAllRule(c) {
+  if (!c.sendAll) return null;
+  const planUnits = Object.keys(c.parts[0].units).filter((u) => c.parts[0].units[u] > 0);
+  const slowest = (c.slowest && BASE_MINUTES[c.slowest] !== undefined ? c.slowest : null)
+    ?? planUnits.filter((u) => BASE_MINUTES[u] !== undefined).sort((x, y) => BASE_MINUTES[y] - BASE_MINUTES[x])[0]
+    ?? null;
+  const allowed = slowest
+    ? Object.keys(BASE_MINUTES).filter((u) => !NEVER_IN_SEND_ALL.includes(u) && BASE_MINUTES[u] <= BASE_MINUTES[slowest])
+    : planUnits.filter((u) => !NEVER_IN_SEND_ALL.includes(u));
+  return { slowest, allowed };
+}
+
+/** Egy rész egységeinek szövege; "minden egység" parancsnál a szabály, és a tervezett számok tájékoztatásul. */
+export function partUnitsText(c, p) {
+  const rule = sendAllRule(c);
+  if (!rule) return unitsText(p.units);
+  const planned = Object.fromEntries(Object.entries(p.units).filter(([, n]) => n > 0));
+  const upTo = rule.slowest ? ` (${UNIT_NAMES[rule.slowest] ?? rule.slowest} sebességéig)` : '';
+  return `MINDEN otthoni egység${upTo}${Object.keys(planned).length ? ` · tervezett: ${unitsText(planned)}` : ''}`;
+}
 
 export function parseCoord(text) {
   const m = /^\s*(\d{1,3})\|(\d{1,3})\s*$/.exec(String(text));
@@ -49,11 +83,20 @@ export function loadPlan(path) {
       const parts = c.train
         ? c.train.map((p, j) => ({ index: j + 1, label: p.purpose ?? (p.noble ? `${p.noble}. nemes` : `${j + 1}. rész`), units: p.units }))
         : [{ index: 1, label: null, units: c.units }];
-      if (parts.some((p) => !p.units || typeof p.units !== 'object')) throw new Error('hiányzik a "units" (vagy a "train" elemeinél)');
+      if (parts.some((p) => !p.units || typeof p.units !== 'object' || Array.isArray(p.units))) throw new Error('hiányzik a "units" (vagy a "train" elemeinél)');
+      for (const p of parts) {
+        for (const [u, n] of Object.entries(p.units)) {
+          if (BASE_MINUTES[u] === undefined) throw new Error(`ismeretlen egység: "${u}" (lehet: ${Object.keys(BASE_MINUTES).join(', ')})`);
+          if (!Number.isInteger(n) || n < 0) throw new Error(`a(z) ${UNIT_NAMES[u]} száma nem nemnegatív egész: ${JSON.stringify(n)}`);
+        }
+      }
+      if (c.send_all !== undefined && typeof c.send_all !== 'boolean') throw new Error('a "send_all" értéke true vagy false legyen');
+      if (c.slowest_unit != null && BASE_MINUTES[c.slowest_unit] === undefined) throw new Error(`ismeretlen slowest_unit: "${c.slowest_unit}"`);
       return {
         order: c.order ?? i + 1,
         role: c.role ?? 'attack',
-        roleName: ROLE_NAMES[c.role] ?? c.role ?? 'parancs',
+        roleName: roleNameOf(c.role),
+        sendAllRequested: c.send_all === true,
         source: { ...c.source, pos: parseCoord(c.source?.coord) },
         target: { ...c.target, pos: parseCoord(c.target?.coord) },
         slowest: c.slowest_unit ?? null,
@@ -61,6 +104,8 @@ export function loadPlan(path) {
         launch: parseTime(c.launch, `${where}.launch`),
         arrival: parseTime(c.arrival, `${where}.arrival`),
         catapultTarget: c.catapult_target ?? null,
+        // nuke: a terv egységszámai helyett minden otthoni egység megy ("send_all": false kikapcsolja)
+        sendAll: !c.train && (c.send_all ?? /^nuke/.test(c.role ?? '')),
         note: c.note ?? null,
         parts,
       };
@@ -69,6 +114,12 @@ export function loadPlan(path) {
       return null;
     }
   });
+  const seenOrders = new Map();
+  for (const c of commands) {
+    if (!c) continue;
+    if (seenOrders.has(c.order)) problems.push(`az order ${c.order} kétszer szerepel – a napló és a riport összekeverné őket`);
+    seenOrders.set(c.order, true);
+  }
   if (problems.length) throw new Error(`A terv hibás:\n  - ${problems.join('\n  - ')}`);
 
   commands.sort((a, b) => a.launch - b.launch || a.order - b.order);
@@ -118,7 +169,24 @@ export function checkPlan({ meta, commands }, { now = Date.now(), world = null }
     }
     if (c.launch < now) add('info', c.order, 'az indítás ideje már elmúlt');
     if (c.catapultTarget === 'TBD') add('warn', c.order, 'a katapult célépülete nincs megadva ("TBD")');
+
+    const rule = sendAllRule(c);
+    if (rule) {
+      if (!rule.slowest) add('warn', c.order, 'minden egység megy, de nincs leglassabb egység (slowest_unit) és tervezett egység sem – a menetidő nem ellenőrizhető, és bármilyen gyors egység elmehet');
+      const stays = Object.keys(c.parts[0].units).filter((u) => c.parts[0].units[u] > 0 && !rule.allowed.includes(u));
+      if (stays.length) add('warn', c.order, `minden egység módban ezek otthon maradnak, pedig a tervben szerepelnek: ${stays.map((u) => UNIT_NAMES[u]).join(', ')}`);
+    } else {
+      const total = c.parts.reduce((n, p) => n + Object.values(p.units).reduce((a, b) => a + b, 0), 0);
+      if (total === 0) add('warn', c.order, 'nincs benne egység (üres "units") – így nem tud kimenni; nuke-nál hagyd el a "send_all": false-t, vagy add meg az egységeket');
+    }
+    if (c.sendAllRequested && c.parts.length > 1) add('warn', c.order, 'a "send_all" vonatnál (train) nem érvényes – a részek a tervezett számokkal mennek');
+    if (c.role === 'noble_train') {
+      c.parts.forEach((p) => { if (!(p.units.snob > 0)) add('warn', c.order, `a vonat ${p.index}. részében nincs nemes`); });
+      if (c.parts.length > 1 && c.slowest && c.slowest !== 'snob') add('warn', c.order, `nemesvonat leglassabb egysége a nemes, nem ${UNIT_NAMES[c.slowest] ?? c.slowest}`);
+    }
   }
+
+  checkSameVillage(commands, add);
 
   // Éjszakai bónusz: a világ beállításából, különben a terv "00:00–08:00" feltevéséből
   const assumedNight = /(\d{1,2}):(\d{2})\D+(\d{1,2}):(\d{2})/.exec(meta.assumptions?.night_bonus ?? '');
@@ -158,6 +226,41 @@ export function checkPlan({ meta, commands }, { now = Date.now(), world = null }
     if (gap < 120) add('info', commands[i].order, `csak ${gap.toFixed(1)} mp-cel a #${commands[i - 1].order} után indul`);
   }
   return issues;
+}
+
+/**
+ * Egy faluból több parancs: a "minden egység" nuke mindent elvisz, amit enged, így ami utána indul
+ * ugyanonnan és ilyen egységet kér, nem fog kimenni (hacsak közben haza nem ér valami).
+ * A commands indítási sorrendben jön.
+ */
+function checkSameVillage(commands, add) {
+  const bySource = new Map();
+  for (const c of commands) bySource.set(c.source.coord, [...(bySource.get(c.source.coord) ?? []), c]);
+  for (const list of bySource.values()) {
+    if (list.length < 2) continue;
+    list.forEach((c, i) => {
+      const before = list.slice(0, i);
+      const rule = sendAllRule(c);
+      for (const n of before) {
+        const nRule = sendAllRule(n);
+        if (nRule) {
+          const needs = rule
+            ? rule.allowed.filter((u) => nRule.allowed.includes(u))
+            : [...new Set(c.parts.flatMap((p) => Object.keys(p.units).filter((u) => p.units[u] > 0)))].filter((u) => nRule.allowed.includes(u));
+          const travel = n.computedTravel ?? n.travelSeconds;
+          const backAt = travel ? n.launch + 2 * travel * 1000 : null;
+          if (needs.length && backAt !== null && c.launch >= backAt) {
+            add('info', c.order, `ugyanebből a faluból a #${n.order} minden egységgel indul előtte, de ${formatDate(new Date(backAt))} ${formatTimeMs(new Date(backAt))}-ra (oda-vissza) a túlélők hazaérhetnek – csak azzal számolj, ami tényleg visszajön`);
+          } else if (needs.length) {
+            add('warn', c.order, `ugyanebből a faluból előtte indul a #${n.order} (minden egység módban), ami elviszi az otthoni ${needs.map((u) => UNIT_NAMES[u]).join(', ')} egységet – ez így nem tud kimenni, hacsak közben haza nem ér sereg`);
+          }
+        } else if (rule) {
+          const took = Object.keys(Object.assign({}, ...n.parts.map((p) => p.units))).filter((u) => rule.allowed.includes(u) && n.parts.some((p) => p.units[u] > 0));
+          if (took.length) add('info', c.order, `ugyanebből a faluból előtte indul a #${n.order}, ami elvisz ${took.map((u) => UNIT_NAMES[u]).join(', ')} egységet – ennyivel kisebb lesz ez a nuke`);
+        }
+      }
+    });
+  }
 }
 
 /** A falvak összevetése a világ nyilvános adataival; a hiányzó cél-azonosítókat/neveket kitölti. */

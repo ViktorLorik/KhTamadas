@@ -17,7 +17,7 @@ import { startServer } from './server.js';
 import { formatDateTime, formatRelative } from './util.js';
 
 // Terv mód (tervszimulátor) – külön belépési pont
-if (process.argv.includes('--plan') || process.argv.includes('-p')) {
+if (['--plan', '-p', '--build'].some((f) => process.argv.includes(f))) {
   const { main } = await import('./plan/cli.js');
   process.exit(await main(process.argv.slice(2)));
 }

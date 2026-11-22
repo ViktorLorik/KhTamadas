@@ -3,7 +3,7 @@
 // "Megnyitás" link a megfelelő falu Gyülekezőhelyére a célkoordinátákkal, és "kiment" pipa (böngészőben tárolva).
 // Az oldal semmit nem küld: a küldés a játékban, a te kattintásodra történik.
 
-import { unitsText } from './plan.js';
+import { partUnitsText } from './plan.js';
 
 const placeUrl = (server, sourceId, coord) => {
   if (!server || !sourceId) return null;
@@ -37,7 +37,7 @@ export function buildDashboardData({ meta, commands }, issues, world) {
         },
         catapultTarget: c.catapultTarget,
         note: c.note,
-        parts: c.parts.map((p) => ({ label: p.label, units: unitsText(p.units) })),
+        parts: c.parts.map((p) => ({ label: p.label, units: partUnitsText(c, p) })),
         url: placeUrl(server, sourceId, c.target.coord),
         issues: issues.filter((i) => i.order === c.order).map((i) => ({ level: i.level, text: i.text })),
       };

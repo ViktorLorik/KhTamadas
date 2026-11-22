@@ -117,6 +117,31 @@ start.cmd --plan tervek\terv.json --shift 10s --speed 600   :: próba: 10 mp mú
 
 A valódi tervek a `tervek/` mappába valók; ez a mappa nem kerül be a repóba (`.gitignore`).
 
+### Parancsépítők (`--build`)
+
+Az érkezési időből kiszámolják a menetidőt és az indítást, és kész parancsot adnak. A `--into` a tervbe is beírja: sorszámot ad, indítási sorrendbe rendez, előtte ellenőrzi, a régi változatot `.bak`-ként megtartja, végül lefuttatja a teljes ellenőrzést.
+
+```bat
+start.cmd --build nuke        --source 525^|558 --target 530^|559 --arrival 2026-11-23T14:13:40.250+01:00 --into tervek\terv.json
+start.cmd --build noble_train --source 524^|560 --target 530^|559 --arrival ...  --units "{\"axe\":6700,\"snob\":4,\"light\":2974}" --into tervek\terv.json
+start.cmd --build fake        --source ... --target ... --arrival ... --units "{\"unit\":\"ram\",\"count\":1}"
+start.cmd --build quad        --source ... --target ... --arrival ... --units "{\"axe\":100,\"ram\":10}"
+```
+
+| Építő | Mit ad |
+|---|---|
+| `nuke` | **minden otthoni egység** (`"send_all": true`): a leglassabb egység (`--slowest`, alapból a `--units` leglassabbja, végül kos) sebességéig megy minden, a nemes és a lovag otthon marad. A `--units` itt csak tájékoztató. `--exact`: pontosan a `--units` megy |
+| `noble_train` | 4 rész: teljes sereg − 3 nemes − 300 bárdos, majd 3× (1 nemes + 100 bárdos). A `--units` a falu teljes serege |
+| `fake` | 1 (vagy `count`) egység, pontos számmal |
+| `quad` | ugyanaz a parancs 4×, 2 mp-es érkezési különbséggel, pontos számokkal (nem „minden egység”, különben az első vinne mindent) |
+
+Sebességek és falunevek: `--server https://hu103.klanhaboru.hu/game.php`, vagy a `--into`/`--plan` terv `server` mezője (nyilvános világadatok; a falu-azonosító és a név is bekerül), különben a terv `assumptions.speed_seconds_per_field` értékei. Időzóna nélküli `--arrival` a gép helyi ideje. `--role nuke_2` a szerepet állítja.
+
+**A terv `send_all` mezője:** a `nuke`, `nuke_1`, `nuke_2`… szerepű parancsok alapból „minden egység” módban vannak (`"send_all": false` kapcsolja ki); vonatnál (`train`) nem érvényes. Az ellenőrzés szól, ha
+- egy faluból egy „minden egység” nuke után még indul valami, ami ugyanilyen egységet kér (kivéve, ha az oda-vissza út után indul: akkor csak megjegyzés);
+- a „minden egység” nukenak nincs leglassabb egysége, vagy a tervezett egységei közül valami (nemes, lovag, lassabb egység) otthon maradna;
+- egy nem „minden egység” parancsban nincs egység, egy nemesvonat-részben nincs nemes, ismeretlen az egység neve, nem egész a szám, vagy kétszer szerepel ugyanaz az `order`.
+
 ## Folyamatos futtatás Windowson
 
 - **Kézzel:** `start.cmd`, és nyitva hagyod az ablakot.

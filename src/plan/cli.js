@@ -16,19 +16,24 @@
 // Parancsépítők (Tampermonkey-gombok helyett):
 //   node src/index.js --build noble_train --source "530|550" --target "508|574"
 //       --arrival 2026-11-21T08:45:01+01:00 --units '{"axe":6209,"snob":4,"light":2734}'
-//       [--server https://hu103.klanhaboru.hu/game.php] [--out tervek/resz.json]
+//   node src/index.js --build nuke --source ... --target ... --arrival ... [--slowest ram]
+//       [--units '{"axe":6000,"ram":300}' – csak tájékoztató] [--exact – pontosan a --units megy]
+//   node src/index.js --build fake  ... --units '{"unit":"ram","count":1}'
+//   node src/index.js --build quad  ... --units '{"axe":100,"ram":10}'
+//   közös: [--server https://hu103.klanhaboru.hu/game.php | --plan terv.json] (sebességek, falunevek)
+//          [--into tervek/terv.json – beírja a tervbe, sorszámmal, ellenőrizve] [--out resz.json] [--role nuke_2]
 
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, copyFileSync, renameSync, unlinkSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { createLogger, paint, C } from '../logger.js';
 import { formatClock, formatDate, formatTimeMs, parseDuration } from '../util.js';
-import { loadPlan, checkPlan, unitsText } from './plan.js';
+import { loadPlan, checkPlan, unitsText, partUnitsText, sendAllRule, UNIT_NAMES } from './plan.js';
 import { createClock, waitUntil } from './precise.js';
 import { notify } from './notify.js';
 import { loadWorld } from './world.js';
 import { buildDashboardData, renderDashboard } from './html.js';
-import { createSender, loadSession, SenderError } from './sender.js';
-import { buildNobleTrain, buildFake, buildQuad } from './build.js';
+import { createSender, loadSession, SenderError, allUnits, unitShortage } from './sender.js';
+import { buildNobleTrain, buildFake, buildQuad, buildNuke, enrichFromWorld, mergeIntoPlan } from './build.js';
 
 function printVillages(log, world, name) {
   if (!world) { log.error('A falulistához a világ adatai kellenek (a terv "server" mezője, --offline nélkül).'); return 1; }
@@ -46,6 +51,7 @@ function parseArgs(argv) {
     plan: null, check: false, shift: null, speed: 1, notify: false, warn: '2m,15s', offline: false, refresh: false,
     villages: null, html: null, send: null, attackLabel: 'Támadás', prepareMs: 5000,
     build: null, source: null, target: null, arrival: null, units: null, out: null,
+    server: null, slowest: null, into: null, role: null, exact: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -73,14 +79,25 @@ function parseArgs(argv) {
     else if (a === '--arrival') o.arrival = next();
     else if (a === '--units') o.units = next();
     else if (a === '--out') o.out = next();
+    else if (a === '--server') o.server = next();
+    else if (a === '--slowest') o.slowest = next();
+    else if (a === '--into') o.into = next();
+    else if (a === '--role') o.role = next();
+    else if (a === '--exact') o.exact = true;
     else throw new Error(`Ismeretlen kapcsoló terv módban: ${a}`);
   }
   if (o.build) {
-    for (const k of ['source', 'target', 'arrival', 'units']) {
+    const required = ['source', 'target', 'arrival', ...(o.build === 'nuke' && !o.exact ? [] : ['units'])];
+    for (const k of required) {
       if (!o[k]) throw new Error(`A --build-hez kell: --${k}`);
     }
+    o.source = o.source.trim(); o.target = o.target.trim();
     if (Number.isNaN(Date.parse(o.arrival))) throw new Error(`--arrival: érvénytelen időpont "${o.arrival}"`);
-    try { o.units = JSON.parse(o.units); } catch { throw new Error('--units: JSON kell, pl. \'{"axe":6209,"snob":4}\''); }
+    if (!/(Z|[+-]\d{2}:?\d{2})$/i.test(o.arrival.trim())) o.arrivalNote = 'az --arrival-ban nincs időzóna – a gép helyi idejeként értem';
+    if (o.units) {
+      try { o.units = JSON.parse(o.units); } catch { throw new Error('--units: JSON kell, pl. \'{"axe":6209,"snob":4}\''); }
+    }
+    if (o.into && o.out) throw new Error('A --into és az --out közül csak az egyiket add meg.');
     return o;
   }
   if (!o.plan) throw new Error('Add meg a tervet: --plan <fájl>');
@@ -92,28 +109,60 @@ function parseArgs(argv) {
 
 /** Parancsépítők futtatása: a kész parancs(ok) JSON-ban a kimenetre (vagy --out fájlba). */
 async function runBuild(opts, log) {
-  let speeds = null;
-  if (opts.plan && existsSync(resolve(opts.plan))) {
-    const { meta } = loadPlan(resolve(opts.plan));
-    if (meta.server) {
-      const world = await loadWorld(meta.server, { log }).catch(() => null);
-      speeds = world?.secondsPerField ?? meta.assumptions?.speed_seconds_per_field ?? null;
-    } else {
-      speeds = meta.assumptions?.speed_seconds_per_field ?? null;
-    }
+  // Sebességek és falunevek: --server, különben a --into / --plan terv "server" mezője, végül a terv feltevései.
+  const planFile = opts.into ?? opts.plan;
+  let rawPlan = null;
+  if (planFile) {
+    const p = resolve(planFile);
+    if (!existsSync(p)) throw new Error(`A terv nem található: ${p}`);
+    try { rawPlan = JSON.parse(readFileSync(p, 'utf8').replace(/^﻿/, '')); } catch (err) { throw new Error(`A terv nem olvasható (${p}): ${err.message}`); }
   }
-  if (!speeds) throw new Error('A menetidőhöz kellenek az egységsebességek: adj meg --plan <terv fájl> "server" mezővel, vagy "assumptions.speed_seconds_per_field"-et.');
+  const server = opts.server ?? rawPlan?.server ?? null;
+  let world = null;
+  if (server) {
+    try { world = await loadWorld(server, { log }); } catch (err) { log.warn(`  ! A világadatok nem érhetők el (${err.message}) – a terv feltevéseivel számolok.`); }
+  }
+  const speeds = world?.secondsPerField ?? rawPlan?.assumptions?.speed_seconds_per_field ?? null;
+  if (!speeds) throw new Error('A menetidőhöz kellenek az egységsebességek: adj meg --server-t, vagy --plan/--into tervet "server" mezővel vagy "assumptions.speed_seconds_per_field"-del.');
+  if (!world) log.detail(`  Sebességek a terv feltevéseiből: ${Object.entries(speeds).map(([u, s]) => `${UNIT_NAMES[u] ?? u} ${s}`).join(', ')} mp/mező`);
+  if (opts.arrivalNote) log.warn(`  ! ${opts.arrivalNote}`);
+
   const common = { source: opts.source, target: opts.target, arrival: opts.arrival, speeds };
+  const units = opts.units ?? {};
   let commands;
-  if (opts.build === 'noble_train') commands = [buildNobleTrain({ ...common, units: opts.units })];
-  else if (opts.build === 'fake') commands = [buildFake({ ...common, unit: opts.units.unit ?? 'axe', count: opts.units.count ?? 1 })];
-  else if (opts.build === 'quad') commands = buildQuad({ ...common, units: opts.units });
-  else throw new Error(`Ismeretlen építő: "${opts.build}" (noble_train | fake | quad)`);
+  if (opts.build === 'noble_train') commands = [buildNobleTrain({ ...common, units })];
+  else if (opts.build === 'nuke') commands = [buildNuke({ ...common, units, slowest: opts.slowest, sendAll: !opts.exact, role: opts.role ?? 'nuke_1' })];
+  else if (opts.build === 'fake') commands = [buildFake({ ...common, unit: units.unit ?? 'axe', count: units.count ?? 1 })];
+  else if (opts.build === 'quad') commands = buildQuad({ ...common, units, role: opts.role ?? 'nuke_1' });
+  else throw new Error(`Ismeretlen építő: "${opts.build}" (noble_train | nuke | fake | quad)`);
+  for (const n of enrichFromWorld(commands, world)) log.detail(`  Cél: ${n}`);
+
+  if (opts.into) {
+    const target = resolve(opts.into);
+    const { plan: merged, added } = mergeIntoPlan(rawPlan, commands);
+    const tmp = `${target}.uj.tmp`;
+    writeFileSync(tmp, JSON.stringify(merged, null, 2) + '\n', 'utf8');
+    let checked;
+    try {
+      checked = loadPlan(tmp);
+    } catch (err) {
+      unlinkSync(tmp);
+      throw new Error(`A bővített terv nem lenne érvényes, nem írtam bele:\n${err.message}`);
+    }
+    copyFileSync(target, `${target}.bak`);
+    renameSync(tmp, target);
+    log.ok(`✓ ${added.length} parancs beírva: ${target} (#${added.map((c) => c.order).join(', #')}) · előző változat: ${basename(target)}.bak`);
+    for (const c of added) log.detail(`  #${c.order} ${c.role}${c.send_all ? ' (minden egység)' : ''}: indul ${c.launch} · érkezik ${c.arrival} · menetidő ${formatClock(c.travel_seconds)} (${UNIT_NAMES[c.slowest_unit]})`);
+    log.title('Ellenőrzés');
+    printIssues(log, checkPlan(checked, { world }));
+    return 0;
+  }
+
   const text = JSON.stringify(commands.length === 1 ? commands[0] : commands, null, 2);
   if (opts.out) {
     writeFileSync(resolve(opts.out), text, 'utf8');
     log.ok(`✓ Parancs elkészült: ${resolve(opts.out)}`);
-    log.detail('  Másold be a terv "commands" tömbjébe (az order számokat igazítsd).');
+    log.detail('  Másold be a terv "commands" tömbjébe (vagy használd a --into <terv.json> kapcsolót, az sorszámot is ad).');
   } else {
     console.log(text);
   }
@@ -143,7 +192,7 @@ function printSchedule(log, commands) {
     const tw = c.target.world;
     const owner = tw ? ` – ${tw.owner?.name ?? 'barbár'}, ${tw.points} p` : '';
     const target = `${c.target.coord}${c.target.label ? ` (${c.target.label}${tw && tw.name !== c.target.label ? `: ${tw.name}` : ''})` : tw ? ` (${tw.name})` : ''}${owner}`;
-    const parts = c.parts.length > 1 ? ` · ${c.parts.length} rész` : '';
+    const parts = c.parts.length > 1 ? ` · ${c.parts.length} rész` : sendAllRule(c) ? ' · minden egység' : '';
     log.info(`  #${String(c.order).padStart(2)}  ${formatDate(new Date(c.launch))} ${formatTimeMs(new Date(c.launch))}  ${c.source.name ?? c.source.coord} → ${target}  ${c.roleName}${parts}  · érk. ${formatTimeMs(new Date(c.arrival))}`);
   }
 }
@@ -154,6 +203,83 @@ function printIssues(log, issues) {
     const where = i.order !== null ? `#${i.order}: ` : '';
     if (i.level === 'warn') log.warn(`  ! ${where}${i.text}`); else log.detail(`  · ${where}${i.text}`);
   }
+}
+
+// Az egységek alap-menetideje (perc/mező). A világ sebessége mindegyiket ugyanúgy szorozza,
+// ezért a sorrendjük minden világon azonos: ehhez nem kellenek a világadatok.
+const BASE_MINUTES = { spear: 18, sword: 22, axe: 18, archer: 18, spy: 9, light: 10, marcher: 10, heavy: 11, ram: 30, catapult: 30, knight: 10, snob: 35 };
+
+/**
+ * Nuke "mindent küld" beállítása: mely egységek mehetnek, és melyik a terv leglassabb egysége.
+ * A nemes és a lovag nem megy; a terv leglassabb egységénél lassabb sem (az eltolná az érkezést).
+ */
+function sendAllOptions(c) {
+  if (!c.sendAll) return null;
+  const planUnits = Object.keys(c.parts[0].units).filter((u) => c.parts[0].units[u] > 0);
+  const slowest = (c.slowest && BASE_MINUTES[c.slowest] !== undefined ? c.slowest : null)
+    ?? planUnits.filter((u) => BASE_MINUTES[u] !== undefined).sort((x, y) => BASE_MINUTES[y] - BASE_MINUTES[x])[0]
+    ?? null;
+  const never = ['snob', 'knight'];
+  const allowed = slowest
+    ? Object.keys(BASE_MINUTES).filter((u) => !never.includes(u) && BASE_MINUTES[u] <= BASE_MINUTES[slowest])
+    : planUnits.filter((u) => !never.includes(u));
+  return { allowed, required: slowest };
+}
+
+const shortageText = (short) => short.map((s) => `${UNIT_NAMES[s.unit] ?? s.unit}: kell ${s.want}, van ${s.have}`).join('; ');
+
+/** Induláskori ellenőrzés: minden kiinduló falu otthoni egységei a még hátralévő parancsokhoz. */
+async function preflightUnits({ sender, commands, sourceIdOf, log }) {
+  const now = Date.now();
+  const byVillage = new Map();
+  for (const c of commands) {
+    if (c.launch <= now) continue;
+    const id = sourceIdOf(c);
+    if (!id) continue;
+    if (!byVillage.has(id)) byVillage.set(id, []);
+    byVillage.get(id).push(c);
+  }
+  if (!byVillage.size) return;
+  log.title('Egységek ellenőrzése (ami most otthon van)');
+  let problems = 0;
+  for (const [id, list] of byVillage) {
+    const name = list[0].source.name ?? list[0].source.coord;
+    let have;
+    try {
+      have = await sender.availableUnits(id);
+    } catch (err) {
+      if (err instanceof SenderError && /Botvédelem|munkamenet/.test(err.message)) throw err;
+      log.warn(`  ! ${name}: nem sikerült lekérni (${err.message})`);
+      problems++;
+      continue;
+    }
+    if (!have) { log.warn(`  ! ${name}: az otthoni egységek nem olvashatók ki az oldalról`); problems++; continue; }
+    log.detail(`  ${name}: ${unitsText(Object.fromEntries(Object.entries(have).filter(([, n]) => n > 0))) || 'nincs otthon egység'}`);
+    for (const c of list) {
+      const sa = sendAllOptions(c);
+      if (sa) {
+        const { send, leftHome } = allUnits(have, sa);
+        if (sa.required && !send[sa.required]) {
+          log.warn(`  ! #${c.order} ${c.roleName}: a leglassabb egység (${UNIT_NAMES[sa.required] ?? sa.required}) nincs otthon – így nem megy ki`);
+          problems++;
+        } else {
+          const less = unitShortage(c.parts[0].units, send);
+          log.ok(`  ✓ #${c.order} ${c.roleName}: minden otthoni egység megy – ${unitsText(send)}`);
+          if (less.length) log.detail(`      a tervhez képest kevesebb: ${shortageText(less)}`);
+          if (Object.keys(leftHome).length) log.detail(`      otthon marad (nemes/lovag, vagy lassabb a tervezettnél): ${unitsText(leftHome)}`);
+        }
+      } else {
+        const total = {};
+        for (const p of c.parts) for (const [u, n] of Object.entries(p.units)) total[u] = (total[u] ?? 0) + Number(n);
+        const short = unitShortage(total, have);
+        if (short.length) { log.warn(`  ! #${c.order} ${c.roleName}: HIÁNYZIK – ${shortageText(short)}`); problems++; }
+        else log.ok(`  ✓ #${c.order} ${c.roleName}: megvan minden egység (${unitsText(total)})`);
+      }
+    }
+    if (list.length > 1) log.detail(`      ebből a faluból ${list.length} parancs indul – az ellenőrzés parancsonként nézi, a parancsok együtt fogyasztják az egységeket`);
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  if (problems) log.warn(`  ${problems} probléma – ha a hiányzó egységek az indításig hazaérnek, rendben lesz; különben javítsd a tervet.`);
 }
 
 export async function main(argv) {
@@ -204,6 +330,7 @@ export async function main(argv) {
   if (opts.check) return 0;
 
   // --- Éles küldő (csak valós időben, --send session.json) ---
+  const sourceIdOf = (c) => c.source.id ?? world?.villageAt(c.source.coord)?.id ?? null;
   let sender = null;
   if (opts.send) {
     if (!meta.server) { log.error('Éles küldéshez a tervben a "server" mező kell (pl. https://hu103.klanhaboru.hu/game.php).'); return 1; }
@@ -212,6 +339,7 @@ export async function main(argv) {
       sender = createSender({ server: meta.server, session, log, attackLabel: opts.attackLabel });
       const firstId = commands[0].source.id ?? world?.villageAt(commands[0].source.coord)?.id;
       await sender.checkSession(firstId);
+      await preflightUnits({ sender, commands, sourceIdOf, log });
       log.title('⚠ ÉLES KÜLDÉS – a támadások valóban kimennek a játéknak');
     } catch (err) {
       log.error(`A küldés nem indul: ${err.message}`);
@@ -252,8 +380,6 @@ export async function main(argv) {
   const finish = () => writeReport({ planPath, logDir, meta, mode, speed, results, log, stopped });
   process.once('SIGINT', () => { stopped = true; finish(); process.exit(130); });
 
-  const sourceIdOf = (c) => c.source.id ?? world?.villageAt(c.source.coord)?.id ?? null;
-
   const nowV = toVirtual(clock.now());
   for (const e of events) {
     if (e.at < nowV) {
@@ -284,9 +410,13 @@ export async function main(argv) {
       const sourceId = sourceIdOf(c);
       try {
         const prepared = await Promise.all(c.parts.map((p) =>
-          sender.prepare({ sourceId, x: c.target.pos.x, y: c.target.pos.y, units: p.units, catapultTarget: c.catapultTarget })));
+          sender.prepare({ sourceId, x: c.target.pos.x, y: c.target.pos.y, units: p.units, catapultTarget: c.catapultTarget, sendAll: sendAllOptions(c) })));
         preparedMap.set(c.order, prepared);
         log.detail(`  ⚙ #${c.order} előkészítve (${c.parts.length} rész, h=${sender.h})`);
+        if (c.sendAll) {
+          log.detail(`      megy: ${unitsText(prepared[0].units)}`);
+          if (Object.keys(prepared[0].leftHome ?? {}).length) log.detail(`      otthon marad: ${unitsText(prepared[0].leftHome)}`);
+        }
       } catch (err) {
         failedOrders.add(c.order);
         log.error(`  ✗ #${c.order} előkészítés sikertelen: ${err.message}`);
@@ -312,7 +442,7 @@ export async function main(argv) {
         try {
           const sourceId = sourceIdOf(c);
           preparedList = await Promise.all(c.parts.map((pp) =>
-            sender.prepare({ sourceId, x: c.target.pos.x, y: c.target.pos.y, units: pp.units, catapultTarget: c.catapultTarget })));
+            sender.prepare({ sourceId, x: c.target.pos.x, y: c.target.pos.y, units: pp.units, catapultTarget: c.catapultTarget, sendAll: sendAllOptions(c) })));
         } catch (err) {
           log.error(`  ✗ ${label} ${c.roleName}${partText} – hiba: ${err.message}`);
           results.push({ order: c.order, part: p.index, status: 'hiba', planned: new Date(e.at).toISOString(), error: err.message });
@@ -322,13 +452,14 @@ export async function main(argv) {
       // A commitot minden résznél a pontos célidőre várjuk (az első után ez azonnal tér vissza).
       await waitUntil(realTarget, { clock });
       try {
-        const sent = await sender.commit(preparedList[p.index - 1]);
+        const prep = preparedList[p.index - 1];
+        const sent = await sender.commit(prep);
         log.ok(`  🚀 ${label} ${c.roleName}${partText} – ELKÜLDVE`);
-        log.detail(`      cél ${formatTimeMs(new Date(e.at))} · tényleges ${formatTimeMs(virtualActual)} · eltérés ${deviation >= 0 ? '+' : ''}${deviation.toFixed(2)} ms · ${unitsText(p.units)}`);
+        log.detail(`      cél ${formatTimeMs(new Date(e.at))} · tényleges ${formatTimeMs(virtualActual)} · eltérés ${deviation >= 0 ? '+' : ''}${deviation.toFixed(2)} ms · ${unitsText(prep.units ?? p.units)}`);
         if (opts.notify && p.index === 1) notify(`Elküldve: #${c.order}`, `${c.source.name ?? c.source.coord} → ${c.target.coord} · ${c.roleName}`);
         results.push({
           order: c.order, part: p.index, status: 'elküldve', role: c.role,
-          source: c.source.name ?? c.source.coord, target: c.target.coord, units: p.units,
+          source: c.source.name ?? c.source.coord, target: c.target.coord, units: prep.units ?? p.units,
           planned: new Date(e.at).toISOString(), actual: virtualActual.toISOString(), deviationMs: Number(deviation.toFixed(3)),
           response: sent.json ?? sent.raw,
         });
@@ -342,7 +473,7 @@ export async function main(argv) {
 
     // --- Szimuláció ---
     log.ok(`  🚀 ${label} ${c.roleName}${partText} – ITT MENT VOLNA KI`);
-    log.detail(`      cél ${formatTimeMs(new Date(e.at))} · tényleges ${formatTimeMs(virtualActual)} · eltérés ${deviation >= 0 ? '+' : ''}${deviation.toFixed(2)} ms · ${unitsText(p.units)}`);
+    log.detail(`      cél ${formatTimeMs(new Date(e.at))} · tényleges ${formatTimeMs(virtualActual)} · eltérés ${deviation >= 0 ? '+' : ''}${deviation.toFixed(2)} ms · ${partUnitsText(c, p)}`);
     if (opts.notify && p.index === 1) notify(`Indítás most: #${c.order}`, `${c.source.name ?? c.source.coord} → ${c.target.coord} · ${c.roleName}`);
     results.push({
       order: c.order, part: p.index, status: 'lefutott', role: c.role,
