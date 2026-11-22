@@ -5,3 +5,4 @@ logs/
 tervek/
 cache/
 examples/*.html
+session.json
