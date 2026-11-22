@@ -13,7 +13,7 @@ export const UNIT_NAMES = {
 
 export const ROLE_NAMES = {
   nuke_1: 'nuke', nuke_2: 'nuke', nuke: 'nuke',
-  noble_train: 'nemesvonat', catapult_train: 'katapultvonat', fake: 'fake', support: 'támogatás',
+  noble_train: 'nemesvonat', noble: 'nemes', catapult_train: 'katapultvonat', fake: 'fake', support: 'támogatás',
 };
 
 export const unitsText = (units) =>

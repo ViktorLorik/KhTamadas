@@ -16,6 +16,7 @@
 // Parancsépítők (Tampermonkey-gombok helyett):
 //   node src/index.js --build noble_train --source "530|550" --target "508|574"
 //       --arrival 2026-11-21T08:45:01+01:00 --units '{"axe":6209,"snob":4,"light":2734}'
+//   node src/index.js --build noble_train --bare ...   (4 × 1 nemes, kíséret nélkül)
 //   node src/index.js --build nuke --source ... --target ... --arrival ... [--slowest ram]
 //       [--units '{"axe":6000,"ram":300}' – csak tájékoztató] [--exact – pontosan a --units megy]
 //   node src/index.js --build fake  ... --units '{"unit":"ram","count":1}'
@@ -34,7 +35,7 @@ import { notify } from './notify.js';
 import { loadWorld } from './world.js';
 import { buildDashboardData, renderDashboard } from './html.js';
 import { createSender, loadSession, SenderError, allUnits, unitShortage } from './sender.js';
-import { buildNobleTrain, buildFake, buildQuad, buildNuke, enrichFromWorld, mergeIntoPlan, isoLocal } from './build.js';
+import { buildNobleTrain, buildNoble, buildFake, buildQuad, buildNuke, enrichFromWorld, mergeIntoPlan, isoLocal } from './build.js';
 
 function printVillages(log, world, name) {
   if (!world) { log.error('A falulistához a világ adatai kellenek (a terv "server" mezője, --offline nélkül).'); return 1; }
@@ -85,6 +86,7 @@ function parseArgs(argv) {
     else if (a === '--into') o.into = next();
     else if (a === '--role') o.role = next();
     else if (a === '--exact') o.exact = true;
+    else if (a === '--bare') o.bare = true;
     else if (a === '--game-arrival') o.gameArrival = next();
     else if (a === '--between') o.between = next();
     else if (a === '--calibrate') o.calibrate = Number(next());
@@ -96,7 +98,7 @@ function parseArgs(argv) {
     if (!o.gameArrival) throw new Error('--calibrate mellé kell: --game-arrival "<a játékban látott érkezés, pl. ma 14:13:40:728>"');
   }
   if (o.build) {
-    const required = ['source', 'target', ...(o.build === 'nuke' && !o.exact ? [] : ['units'])];
+    const required = ['source', 'target', ...((o.build === 'nuke' && !o.exact) || o.build === 'noble' || (o.build === 'noble_train' && o.bare) ? [] : ['units'])];
     for (const k of required) {
       if (!o[k]) throw new Error(`A --build-hez kell: --${k}`);
     }
@@ -164,13 +166,14 @@ async function runBuild(opts, log) {
     log.detail(`  Játékbeli érkezés ${formatDate(new Date(gameArrival))} ${formatTimeMs(new Date(gameArrival))} − óraeltérés (${offset.ms} ms, ${offset.source}) → a tervben ${formatTimeMs(new Date(arrival))}`);
   }
   const common = { source: opts.source, target: opts.target, arrival, speeds };
-  const units = opts.units ?? {};
+  const units = opts.units ?? (opts.build === 'noble_train' && opts.bare ? { snob: 4 } : {});
   let commands;
-  if (opts.build === 'noble_train') commands = [buildNobleTrain({ ...common, units })];
+  if (opts.build === 'noble_train') commands = [buildNobleTrain({ ...common, units, bare: opts.bare })];
   else if (opts.build === 'nuke') commands = [buildNuke({ ...common, units, slowest: opts.slowest, sendAll: !opts.exact, role: opts.role ?? 'nuke_1' })];
+  else if (opts.build === 'noble') commands = [buildNoble({ ...common, units })];
   else if (opts.build === 'fake') commands = [buildFake({ ...common, unit: units.unit ?? 'axe', count: units.count ?? 1 })];
   else if (opts.build === 'quad') commands = buildQuad({ ...common, units, role: opts.role ?? 'nuke_1' });
-  else throw new Error(`Ismeretlen építő: "${opts.build}" (noble_train | nuke | fake | quad)`);
+  else throw new Error(`Ismeretlen építő: "${opts.build}" (noble_train | noble | nuke | fake | quad)`);
   for (const n of enrichFromWorld(commands, world)) log.detail(`  Cél: ${n}`);
   if (opts.gameArrival || opts.between) {
     for (const c of commands) c.game_arrival = isoLocal(Date.parse(c.arrival) + offset.ms);

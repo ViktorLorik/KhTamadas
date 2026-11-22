@@ -60,11 +60,21 @@ function timing({ source, target, unit, speeds, arrival }) {
  * @param {object} p.speeds      mp/mező értékek ({ snob: 1944.444, ram: 1666.667, ... } a világból vagy a terv feltevéseiből)
  * @param {string} [p.label]     a részcímkékhez
  */
-export function buildNobleTrain({ units, source, target, arrival, speeds, label = null }) {
+export function buildNobleTrain({ units, source, target, arrival, speeds, label = null, bare = false }) {
   const have = checkUnits(units, 'Nemesvonat');
   const snob = have.snob ?? 0;
   const axe = have.axe ?? 0;
   if (snob < 4) throw new Error(`Nemesvonathoz legalább 4 nemes kell a faluban (most: ${snob}).`);
+  if (bare) {
+    // Kíséret nélküli vonat (pl. klánkoordinált foglalásnál, ahol a falut mások tisztítják): 4 × 1 nemes.
+    return {
+      role: 'noble_train',
+      source: { coord: source },
+      target: { coord: target },
+      train: [1, 2, 3, 4].map((noble) => ({ noble, units: { snob: 1 } })),
+      ...timing({ source, target, unit: 'snob', speeds, arrival }),
+    };
+  }
   if (axe < 300 + 3 * 100) throw new Error(`Nemesvonathoz legalább ${300 + 3 * 100} bárdos kell (1. rész −300, 3 kisérő ×100; most: ${axe}).`);
 
   const first = { ...have, axe: axe - 300, snob: snob - 3 };
@@ -124,6 +134,23 @@ export function buildFake({ source, target, unit = 'axe', count = 1, arrival, sp
     send_all: false,
     units,
     ...timing({ source, target, unit, speeds, arrival }),
+  };
+}
+
+/**
+ * Magányos nemes (pl. klánkoordinált nemesítésnél, ahol a falut mások tisztítják): alapból 1 nemes egyedül,
+ * pontos számokkal ("send_all": false). Kísérő megadható: --units '{"snob":1,"axe":100}'.
+ */
+export function buildNoble({ source, target, arrival, speeds, units = { snob: 1 } }) {
+  const planned = checkUnits(Object.keys(units).length ? units : { snob: 1 }, 'Nemes');
+  if (!(planned.snob > 0)) throw new Error('Nemes: legalább 1 nemes kell a "units"-ba.');
+  return {
+    role: 'noble',
+    source: { coord: source },
+    target: { coord: target },
+    send_all: false,
+    units: planned,
+    ...timing({ source, target, unit: slowestOf(planned), speeds, arrival }),
   };
 }
 
