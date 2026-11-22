@@ -19,20 +19,37 @@ export class SenderError extends Error {}
 const UNIT_KEYS = ['spear', 'sword', 'axe', 'archer', 'spy', 'light', 'marcher', 'heavy', 'ram', 'catapult', 'knight', 'snob'];
 
 const decodeEntities = (s) =>
-  s.replace(/&(#x?[0-9a-fA-F]+|\w+);/g, (m, e) => {
-    if (e[0] === '#') { const n = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10); return Number.isNaN(n) ? m : String.fromCodePoint(n); }
-    return { amp: '&', quot: '"', apos: "'", lt: '<', gt: '>', nbsp: ' ' }[e] ?? m;
-  });
+    s.replace(/&(#x?[0-9a-fA-F]+|\w+);/g, (m, e) => {
+      if (e[0] === '#') { const n = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10); return Number.isNaN(n) ? m : String.fromCodePoint(n); }
+      return { amp: '&', quot: '"', apos: "'", lt: '<', gt: '>', nbsp: ' ' }[e] ?? m;
+    });
+
+/** Egy HTML-tag attribútumai (bármilyen sorrendben, "..." / '...' / idézőjel nélkül). */
+function parseAttrs(tag) {
+  const attrs = {};
+  const re = /([^\s"'<>\/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+  let m;
+  const body = tag.replace(/^<\w+/, '').replace(/\/?>$/, '');
+  while ((m = re.exec(body))) {
+    attrs[m[1].toLowerCase()] = decodeEntities(m[2] ?? m[3] ?? m[4] ?? '');
+  }
+  return attrs;
+}
 
 /** <input name="..." value="..."> párok kinyerése (a játék űrlapmezői, ahogy a böngésző is elküldené). */
 function extractInputs(html) {
   const out = {};
-  const re = /<input[^>]*?name="([^"]+)"[^>]*?(?:value="([^"]*)")?[^>]*?>/g;
+  const re = /<input\b[^>]*>/gi;
   let m;
   while ((m = re.exec(html))) {
-    const name = m[1];
-    if (name in out) continue;
-    out[name] = decodeEntities(m[2] ?? '');
+    const a = parseAttrs(m[0]);
+    const name = a.name;
+    if (!name || name in out || 'disabled' in a) continue;
+    const type = (a.type ?? 'text').toLowerCase();
+    // A böngésző sem küldi el: gombokat, és a be nem jelölt jelölőnégyzetet / rádiógombot.
+    if (['submit', 'button', 'image', 'reset', 'file'].includes(type)) continue;
+    if ((type === 'checkbox' || type === 'radio') && !('checked' in a)) continue;
+    out[name] = a.value ?? ((type === 'checkbox' || type === 'radio') ? 'on' : '');
   }
   return out;
 }
@@ -54,7 +71,7 @@ export function loadSession(file) {
 /**
  * Küldő létrehozása.
  * @param {object} p
- * @param {string} p.server    pl. "https://hu103.klanhaboru.hu"
+ * @param {string} p.server    pl. "https://hu103.klanhaboru.hu/game.php"
  * @param {object} p.session   a loadSession() kimenete
  * @param {object} p.log       a logger (info/detail/warn/error)
  * @param {string} [p.attackLabel] a "Támadás" gomb felirata (alapból "Támadás")
@@ -127,6 +144,7 @@ export function createSender({ server, session, log, attackLabel = 'Támadás', 
     }
     data.x = x;
     data.y = y;
+    data.input = `${x}|${y}`; // a célpont szövegmezője, ahogy a böngészőben beírnád
     data.target_type = 'coord';
     data.attack = attackLabel;
     delete data.support; // a "Támogatás" gomb ne menjen ki véletlenül

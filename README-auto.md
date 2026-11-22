@@ -14,7 +14,7 @@ A játék bejelentkezett munkamenetét egyszer ki kell menteni:
    (a `session.example.json` alapján):
    ```json
    {
-     "server": "https://hu103.klanhaboru.hu",
+     "server": "https://hu103.klanhaboru.hu/game.php",
      "cookies": { "sid": "...", "cid": "...", "ssid": "...", "csid": "..." }
    }
    ```

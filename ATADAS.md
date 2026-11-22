@@ -53,7 +53,7 @@ cache/, logs/, tampermonkey/ gitignore
 
 ```jsonc
 {
-  "plan": "név", "server": "https://hu103.klanhaboru.hu", "world": "hu103",
+  "plan": "név", "server": "https://hu103.klanhaboru.hu/game.php", "world": "hu103",
   "player": "saját játékosnév", "enemy": "ellenfél",
   "assumptions": { "speed_seconds_per_field": { "ram": 1666.667, "snob": 1944.444 }, "night_bonus": "23:00–07:00" },
   "targets": [ { "key": "A", "coord": "507|574", "name": null, "id": null } ],

@@ -16,7 +16,7 @@
 // Parancsépítők (Tampermonkey-gombok helyett):
 //   node src/index.js --build noble_train --source "530|550" --target "508|574"
 //       --arrival 2026-11-21T08:45:01+01:00 --units '{"axe":6209,"snob":4,"light":2734}'
-//       [--server https://hu103.klanhaboru.hu] [--out tervek/resz.json]
+//       [--server https://hu103.klanhaboru.hu/game.php] [--out tervek/resz.json]
 
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
@@ -206,7 +206,7 @@ export async function main(argv) {
   // --- Éles küldő (csak valós időben, --send session.json) ---
   let sender = null;
   if (opts.send) {
-    if (!meta.server) { log.error('Éles küldéshez a tervben a "server" mező kell (pl. https://hu103.klanhaboru.hu).'); return 1; }
+    if (!meta.server) { log.error('Éles küldéshez a tervben a "server" mező kell (pl. https://hu103.klanhaboru.hu/game.php).'); return 1; }
     try {
       const session = loadSession(resolve(opts.send));
       sender = createSender({ server: meta.server, session, log, attackLabel: opts.attackLabel });

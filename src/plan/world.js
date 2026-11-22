@@ -61,7 +61,7 @@ function parseXml(xml) {
 }
 
 /**
- * Betölti a világ adatait. A szerver a terv "server" mezőjéből jön, pl. https://hu103.klanhaboru.hu
+ * Betölti a világ adatait. A szerver a terv "server" mezőjéből jön, pl. https://hu103.klanhaboru.hu/game.php
  * @returns {Promise<World>}
  */
 export async function loadWorld(server, { log, refresh = false, cacheRoot = resolve('cache') } = {}) {
