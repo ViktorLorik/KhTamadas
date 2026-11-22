@@ -137,6 +137,23 @@ start.cmd --build quad        --source ... --target ... --arrival ... --units "{
 
 Sebességek és falunevek: `--server https://hu103.klanhaboru.hu/game.php`, vagy a `--into`/`--plan` terv `server` mezője (nyilvános világadatok; a falu-azonosító és a név is bekerül), különben a terv `assumptions.speed_seconds_per_field` értékei. Időzóna nélküli `--arrival` a gép helyi ideje. `--role nuke_2` a szerepet állítja.
 
+### Óraeltérés és igazítás úton lévő támadáshoz
+
+A játék a terv idejéhez képest kicsit máskor jelzi az érkezést (a gép órája + hálózati késés, nálunk mérve −217 ms). Ha minden parancs a programból megy, ez mindegyiket egyformán tolja el, tehát nem számít. Akkor számít, ha egy **már úton lévő** támadáshoz kell igazodni.
+
+```bat
+:: 1. mérés: egy kiment parancs érkezése a játékban (ahogy a játék mutatja, ms-mal)
+start.cmd --plan tervek\terv.json --calibrate 3 --game-arrival "ma 14:13:40:728"
+:: 2. igazítás játékidőhöz: pontos érkezés, vagy két úton lévő érkezés közé (középre)
+start.cmd --build nuke --source ... --target ... --game-arrival "ma 14:13:40:728" --into tervek\terv.json
+start.cmd --build nuke --source ... --target ... --between "ma 14:13:40:652,ma 14:13:40:804" --into tervek\terv.json
+```
+
+- A mérések a `tervek/kalibracio.json`-ba kerülnek, az érvényes érték az utolsó 5 mérés mediánja. Egy tervben az `assumptions.clock_offset_ms` felülírhatja.
+- Az így épített parancs `game_arrival` mezőt kap. Ha később új mérés módosítja az eltérést, az ellenőrzés kiírja a helyes indítást.
+- A `--between` két időpontja a terv `in_flight` listájába kerül: `[{ "label", "target", "role", "game_arrival" }]`, dátummal. A `role` lehet `nuke` vagy `noble`, ezt kézzel is beírhatod.
+- Az ellenőrzés célpontonként játékidőben nézi a sorrendet, az úton lévőkkel együtt, és szól, ha két érkezés közt 50 ms-nál (vagy a mért ingadozásnál) kisebb a rés.
+
 **A terv `send_all` mezője:** a `nuke`, `nuke_1`, `nuke_2`… szerepű parancsok alapból „minden egység” módban vannak (`"send_all": false` kapcsolja ki); vonatnál (`train`) nem érvényes. Az ellenőrzés szól, ha
 - egy faluból egy „minden egység” nuke után még indul valami, ami ugyanilyen egységet kér (kivéve, ha az oda-vissza út után indul: akkor csak megjegyzés);
 - a „minden egység” nukenak nincs leglassabb egysége, vagy a tervezett egységei közül valami (nemes, lovag, lassabb egység) otthon maradna;

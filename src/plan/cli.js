@@ -27,13 +27,14 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, copyFileSync, renam
 import { basename, join, resolve } from 'node:path';
 import { createLogger, paint, C } from '../logger.js';
 import { formatClock, formatDate, formatTimeMs, parseDuration } from '../util.js';
-import { loadPlan, checkPlan, unitsText, partUnitsText, sendAllRule, UNIT_NAMES } from './plan.js';
+import { loadPlan, checkPlan, unitsText, partUnitsText, sendAllRule, UNIT_NAMES, MIN_SAFE_GAP_MS } from './plan.js';
+import { clockOffset, parseGameTime, addCalibrationSample, CALIBRATION_FILE } from './clock.js';
 import { createClock, waitUntil } from './precise.js';
 import { notify } from './notify.js';
 import { loadWorld } from './world.js';
 import { buildDashboardData, renderDashboard } from './html.js';
 import { createSender, loadSession, SenderError, allUnits, unitShortage } from './sender.js';
-import { buildNobleTrain, buildFake, buildQuad, buildNuke, enrichFromWorld, mergeIntoPlan } from './build.js';
+import { buildNobleTrain, buildFake, buildQuad, buildNuke, enrichFromWorld, mergeIntoPlan, isoLocal } from './build.js';
 
 function printVillages(log, world, name) {
   if (!world) { log.error('A falulistához a világ adatai kellenek (a terv "server" mezője, --offline nélkül).'); return 1; }
@@ -84,16 +85,28 @@ function parseArgs(argv) {
     else if (a === '--into') o.into = next();
     else if (a === '--role') o.role = next();
     else if (a === '--exact') o.exact = true;
+    else if (a === '--game-arrival') o.gameArrival = next();
+    else if (a === '--between') o.between = next();
+    else if (a === '--calibrate') o.calibrate = Number(next());
+    else if (a === '--part') o.part = Number(next());
     else throw new Error(`Ismeretlen kapcsoló terv módban: ${a}`);
   }
+  if (o.calibrate !== undefined) {
+    if (!Number.isInteger(o.calibrate)) throw new Error('--calibrate: a parancs sorszáma (order) kell, pl. --calibrate 3');
+    if (!o.gameArrival) throw new Error('--calibrate mellé kell: --game-arrival "<a játékban látott érkezés, pl. ma 14:13:40:728>"');
+  }
   if (o.build) {
-    const required = ['source', 'target', 'arrival', ...(o.build === 'nuke' && !o.exact ? [] : ['units'])];
+    const required = ['source', 'target', ...(o.build === 'nuke' && !o.exact ? [] : ['units'])];
     for (const k of required) {
       if (!o[k]) throw new Error(`A --build-hez kell: --${k}`);
     }
+    const timeGiven = [o.arrival, o.gameArrival, o.between].filter(Boolean).length;
+    if (timeGiven !== 1) throw new Error('A --build-hez pontosan egy kell ezek közül: --arrival (a terv órája szerint), --game-arrival (a játék órája szerint), --between "<játékidő A>,<játékidő B>"');
     o.source = o.source.trim(); o.target = o.target.trim();
-    if (Number.isNaN(Date.parse(o.arrival))) throw new Error(`--arrival: érvénytelen időpont "${o.arrival}"`);
-    if (!/(Z|[+-]\d{2}:?\d{2})$/i.test(o.arrival.trim())) o.arrivalNote = 'az --arrival-ban nincs időzóna – a gép helyi idejeként értem';
+    if (o.arrival) {
+      if (Number.isNaN(Date.parse(o.arrival))) throw new Error(`--arrival: érvénytelen időpont "${o.arrival}"`);
+      if (!/(Z|[+-]\d{2}:?\d{2})$/i.test(o.arrival.trim())) o.arrivalNote = 'az --arrival-ban nincs időzóna – a gép helyi idejeként értem';
+    }
     if (o.units) {
       try { o.units = JSON.parse(o.units); } catch { throw new Error('--units: JSON kell, pl. \'{"axe":6209,"snob":4}\''); }
     }
@@ -127,7 +140,30 @@ async function runBuild(opts, log) {
   if (!world) log.detail(`  Sebességek a terv feltevéseiből: ${Object.entries(speeds).map(([u, s]) => `${UNIT_NAMES[u] ?? u} ${s}`).join(', ')} mp/mező`);
   if (opts.arrivalNote) log.warn(`  ! ${opts.arrivalNote}`);
 
-  const common = { source: opts.source, target: opts.target, arrival: opts.arrival, speeds };
+  // Játékidőhöz igazítás: a kívánt játékbeli érkezésből a mért óraeltéréssel lesz tervezett érkezés.
+  let arrival = opts.arrival;
+  let anchors = [];
+  const offset = clockOffset(rawPlan);
+  if (opts.gameArrival || opts.between) {
+    if (!offset) throw new Error('Játékidőhöz igazításhoz mért óraeltérés kell. Egy már kiment parancsnál nézd meg a játékban az érkezést, és add meg: start.cmd --plan <terv> --calibrate <order> --game-arrival "ma 14:13:40:728"');
+    let gameArrival;
+    if (opts.between) {
+      const parts = opts.between.split(',').map((s) => s.trim()).filter(Boolean);
+      if (parts.length !== 2) throw new Error('--between: két játékbeli időpont kell vesszővel, pl. "ma 14:13:40:652,ma 14:13:40:804"');
+      const [a, b] = parts.map((s) => parseGameTime(s));
+      if (!(b > a)) throw new Error('--between: a második időpont legyen a későbbi');
+      gameArrival = Math.round((a + b) / 2);
+      const half = Math.floor((b - a) / 2);
+      const safe = Math.max(MIN_SAFE_GAP_MS, offset.spread ?? 0);
+      if (half < safe) log.warn(`  ! A rés túl szűk: mindkét oldaltól csak ${half} ms (biztonságos: ≥ ${safe} ms) – a sorrend felcserélődhet.`);
+      anchors = [a, b];
+    } else {
+      gameArrival = parseGameTime(opts.gameArrival);
+    }
+    arrival = gameArrival - offset.ms;
+    log.detail(`  Játékbeli érkezés ${formatDate(new Date(gameArrival))} ${formatTimeMs(new Date(gameArrival))} − óraeltérés (${offset.ms} ms, ${offset.source}) → a tervben ${formatTimeMs(new Date(arrival))}`);
+  }
+  const common = { source: opts.source, target: opts.target, arrival, speeds };
   const units = opts.units ?? {};
   let commands;
   if (opts.build === 'noble_train') commands = [buildNobleTrain({ ...common, units })];
@@ -136,10 +172,24 @@ async function runBuild(opts, log) {
   else if (opts.build === 'quad') commands = buildQuad({ ...common, units, role: opts.role ?? 'nuke_1' });
   else throw new Error(`Ismeretlen építő: "${opts.build}" (noble_train | nuke | fake | quad)`);
   for (const n of enrichFromWorld(commands, world)) log.detail(`  Cél: ${n}`);
+  if (opts.gameArrival || opts.between) {
+    for (const c of commands) c.game_arrival = isoLocal(Date.parse(c.arrival) + offset.ms);
+  }
 
   if (opts.into) {
     const target = resolve(opts.into);
     const { plan: merged, added } = mergeIntoPlan(rawPlan, commands);
+    // A --between két időpontja úton lévő támadás: bekerül az "in_flight"-ba, hogy az ellenőrzés később is lássa.
+    if (anchors.length) {
+      const list = Array.isArray(merged.in_flight) ? [...merged.in_flight] : [];
+      const target = commands[0].target.coord;
+      anchors.forEach((t, i) => {
+        const game = isoLocal(t);
+        if (list.some((f) => f.target === target && Date.parse(f.game_arrival) === t)) return;
+        list.push({ label: `úton lévő (#${added[0].order} ${i === 0 ? 'előtte' : 'utána'})`, target, role: null, game_arrival: game });
+      });
+      merged.in_flight = list;
+    }
     const tmp = `${target}.uj.tmp`;
     writeFileSync(tmp, JSON.stringify(merged, null, 2) + '\n', 'utf8');
     let checked;
@@ -166,6 +216,34 @@ async function runBuild(opts, log) {
   } else {
     console.log(text);
   }
+  return 0;
+}
+
+/**
+ * Óraeltérés mérése: a parancs tervezett érkezése és a játékban látott érkezése közti különbség.
+ * A vonat részei a tervben azonos érkezésűek, de egymás után, néhány ms-mal később mennek ki:
+ * a mérés az 1. részre a legpontosabb (--part n mással is mehet, a napló jelzi).
+ */
+function runCalibrate(opts, { meta, commands }, planPath, log) {
+  const c = commands.find((x) => x.order === opts.calibrate);
+  if (!c) throw new Error(`Nincs #${opts.calibrate} parancs a tervben.`);
+  const part = opts.part ?? 1;
+  if (!c.parts[part - 1]) throw new Error(`A #${c.order} parancsnak nincs ${part}. része.`);
+  const game = parseGameTime(opts.gameArrival);
+  const offsetMs = game - c.arrival;
+  if (Math.abs(offsetMs) > 5000) {
+    throw new Error(`A különbség ${offsetMs} ms – ez nem óraeltérés, valószínűleg rossz a nap vagy a parancs (terv: ${formatDate(new Date(c.arrival))} ${formatTimeMs(new Date(c.arrival))}, játék: ${formatDate(new Date(game))} ${formatTimeMs(new Date(game))}).`);
+  }
+  const before = clockOffset(null);
+  const after = addCalibrationSample({
+    offsetMs, at: new Date().toISOString(), plan: basename(planPath), order: c.order, part,
+    planned: isoLocal(c.arrival), game: isoLocal(game),
+  });
+  log.ok(`✓ Mérés: #${c.order}${c.parts.length > 1 ? ` ${part}. rész` : ''} – terv ${formatTimeMs(new Date(c.arrival))}, játék ${formatTimeMs(new Date(game))} → ${offsetMs > 0 ? '+' : ''}${offsetMs} ms`);
+  if (part > 1) log.detail('  (vonat későbbi része: a részek néhány ms-mal egymás után mennek ki, ez a mérésben is benne van)');
+  log.info(`  Érvényes óraeltérés: ${after.ms} ms (${after.source}${after.spread ? `, ingadozás ${after.spread} ms` : ''})${before ? ` – előtte ${before.ms} ms` : ''}`);
+  log.detail(`  Mentve: ${CALIBRATION_FILE}`);
+  if (meta.assumptions?.clock_offset_ms != null) log.warn(`  ! Ebben a tervben fix "clock_offset_ms" van (${meta.assumptions.clock_offset_ms}), az erősebb a mérésnél.`);
   return 0;
 }
 
@@ -300,6 +378,11 @@ export async function main(argv) {
   let plan;
   try { plan = loadPlan(planPath); } catch (err) { log.error(err.message); return 1; }
   const { meta, commands } = plan;
+
+  // --- Kalibráció: egy már kiment parancs játékban látott érkezése → óraeltérés ---
+  if (opts.calibrate !== undefined) {
+    try { return runCalibrate(opts, plan, planPath, log); } catch (err) { log.error(err.message); return 1; }
+  }
 
   log.title(`▣ ${meta.plan ?? basename(planPath)}`);
 

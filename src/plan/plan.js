@@ -3,6 +3,7 @@
 
 import { readFileSync } from 'node:fs';
 import { formatDate, formatTimeMs } from '../util.js';
+import { clockOffset, parseGameTime } from './clock.js';
 
 export const UNIT_NAMES = {
   spear: 'lándzsás', sword: 'kardforgató', axe: 'bárdos', archer: 'íjász', spy: 'kém',
@@ -66,6 +67,31 @@ function parseTime(value, where) {
   return t;
 }
 
+/** Játékbeli időpont a tervfájlban: dátummal kell ("ma"/"holnap" egy fájlban mást jelentene holnap). */
+function parseDatedTime(value, where) {
+  if (!/^\d{4}-\d{2}-\d{2}/.test(String(value).trim())) throw new Error(`${where}: dátummal add meg, pl. "2026-11-22 14:13:40.652" (most: "${value}")`);
+  try { return parseGameTime(value); } catch (err) { throw new Error(`${where}: ${err.message}`); }
+}
+
+/** Úton lévő (már kiment) támadások, amikhez a terv igazodik: { label, target, role, gameArrival } */
+function parseInFlight(list, problems) {
+  if (list === undefined) return [];
+  if (!Array.isArray(list)) { problems.push('az "in_flight" tömb legyen'); return []; }
+  return list.map((f, i) => {
+    const where = `in_flight[${i}]`;
+    try {
+      parseCoord(f?.target);
+      return { label: f.label ?? `úton lévő #${i + 1}`, target: String(f.target).trim(), role: f.role ?? null, gameArrival: parseDatedTime(f.game_arrival, `${where}.game_arrival`) };
+    } catch (err) {
+      problems.push(`${where}: ${err.message}`);
+      return null;
+    }
+  }).filter(Boolean);
+}
+
+/** Ennél kisebb rés két érkezés között (játékidőben) már kockázatos: a kérések késése ennyit ingadozhat. */
+export const MIN_SAFE_GAP_MS = 50;
+
 /** Beolvassa és szerkezetileg ellenőrzi a tervet. Hibánál érthető üzenettel dob. */
 export function loadPlan(path) {
   let plan;
@@ -104,6 +130,8 @@ export function loadPlan(path) {
         launch: parseTime(c.launch, `${where}.launch`),
         arrival: parseTime(c.arrival, `${where}.arrival`),
         catapultTarget: c.catapult_target ?? null,
+        // a kívánt érkezés a játék órája szerint (ha egy úton lévő támadáshoz igazítottuk) – lásd clock.js
+        gameArrival: c.game_arrival != null ? parseDatedTime(c.game_arrival, `${where}.game_arrival`) : null,
         // nuke: a terv egységszámai helyett minden otthoni egység megy ("send_all": false kikapcsolja)
         sendAll: !c.train && (c.send_all ?? /^nuke/.test(c.role ?? '')),
         note: c.note ?? null,
@@ -120,21 +148,39 @@ export function loadPlan(path) {
     if (seenOrders.has(c.order)) problems.push(`az order ${c.order} kétszer szerepel – a napló és a riport összekeverné őket`);
     seenOrders.set(c.order, true);
   }
+  const inFlight = parseInFlight(plan.in_flight, problems);
   if (problems.length) throw new Error(`A terv hibás:\n  - ${problems.join('\n  - ')}`);
 
   commands.sort((a, b) => a.launch - b.launch || a.order - b.order);
   const targetNames = Object.fromEntries((plan.targets || []).map((t) => [t.coord, t.key ?? t.name]));
   for (const c of commands) c.target.label = targetNames[c.target.coord] ?? c.target.name ?? null;
-  return { meta: plan, commands };
+  return { meta: plan, commands, inFlight };
 }
 
 /**
  * Tartalmi ellenőrzések: a világ hivatalos adatai (ha vannak), különben a terv feltevései alapján újraszámolja a menetidőket,
  * és megnézi, összeáll-e az érkezési sorrend. Visszaad: [{ level: 'warn'|'info', text }]
  */
-export function checkPlan({ meta, commands }, { now = Date.now(), world = null } = {}) {
+export function checkPlan({ meta, commands, inFlight = [] }, { now = Date.now(), world = null, offset: givenOffset } = {}) {
   const issues = [];
   const add = (level, order, text) => issues.push({ level, order, text });
+  // Óraeltérés (clock.js): a tervezett időből játékidő. Ha nincs mérés, a kettő azonosnak számít.
+  const offset = givenOffset !== undefined ? givenOffset : clockOffset(meta);
+  const toGame = (t) => t + (offset?.ms ?? 0);
+  if (offset) add('info', null, `óraeltérés a játékhoz: ${offset.ms > 0 ? '+' : ''}${offset.ms} ms (${offset.source}${offset.spread ? `, ingadozás ${offset.spread} ms` : ''})`);
+
+  for (const c of commands) {
+    if (c.gameArrival === null) continue;
+    if (!offset) {
+      add('warn', c.order, 'játékidőhöz igazított parancs (game_arrival), de nincs mért óraeltérés – mérd meg: --calibrate');
+      continue;
+    }
+    const want = c.gameArrival - offset.ms;
+    const diff = c.arrival - want;
+    if (Math.abs(diff) > 1) {
+      add('warn', c.order, `a játékban ${formatTimeMs(new Date(c.gameArrival))}-kor kell érkeznie, de a mostani eltéréssel (${offset.ms} ms) ${formatTimeMs(new Date(toGame(c.arrival)))}-kor ér be – helyes érkezés a tervben: ${formatTimeMs(new Date(want))}, indítás: ${formatTimeMs(new Date(c.launch - diff))} (építsd újra --game-arrival-lal)`);
+    }
+  }
   const assumed = meta.assumptions?.speed_seconds_per_field ?? {};
   const speeds = world?.secondsPerField ?? assumed;
   const speedSource = world ? 'a világ hivatalos egységsebességeivel' : 'a terv feltevéseivel';
@@ -200,23 +246,39 @@ export function checkPlan({ meta, commands }, { now = Date.now(), world = null }
     const from = Number(night[1]) * 60 + Number(night[2]);
     const to = Number(night[3]) * 60 + Number(night[4]);
     for (const c of commands) {
-      const d = new Date(c.arrival);
+      const d = new Date(toGame(c.arrival));
       const m = d.getHours() * 60 + d.getMinutes();
       const inside = from <= to ? m >= from && m < to : m >= from || m < to;
       if (inside) add('warn', c.order, 'éjszakai bónusz idejére érkezik');
     }
   }
 
-  // Célpontonként: azonos másodperc, és a nukeok a nemesek előtt
+  // Célpontonként, a JÁTÉK órája szerint (tervezett érkezés + óraeltérés), az úton lévő támadásokkal együtt:
+  // azonos másodperc, a nukeok a nemesek előtt, és elég rés a szomszédos érkezések között.
+  const items = [
+    ...commands.map((c) => ({ coord: c.target.coord, at: toGame(c.arrival), role: c.role, order: c.order, name: `#${c.order}` })),
+    ...inFlight.map((f) => ({ coord: f.target, at: f.gameArrival, role: f.role ?? '', order: null, name: f.label })),
+  ];
   const byTarget = new Map();
-  for (const c of commands) byTarget.set(c.target.coord, [...(byTarget.get(c.target.coord) ?? []), c]);
+  for (const it of items) byTarget.set(it.coord, [...(byTarget.get(it.coord) ?? []), it]);
+  const clockNote = offset ? ' (játékidőben)' : '';
   for (const [coord, list] of byTarget) {
-    const seconds = new Set(list.map((c) => Math.floor(c.arrival / 1000)));
-    if (seconds.size > 1) add('warn', null, `${coord}: nem ugyanabban a másodpercben érkezik minden parancs`);
-    const nukes = list.filter((c) => c.role.startsWith('nuke')).map((c) => c.arrival);
-    const nobles = list.filter((c) => c.role === 'noble_train').map((c) => c.arrival);
-    if (nukes.length && nobles.length && Math.max(...nukes) >= Math.min(...nobles)) {
-      add('warn', null, `${coord}: egy nuke a nemesek után vagy velük egyszerre érkezik`);
+    list.sort((a, b) => a.at - b.at);
+    const seconds = new Set(list.map((it) => Math.floor(it.at / 1000)));
+    if (seconds.size > 1) add('warn', null, `${coord}: nem ugyanabban a másodpercben érkezik minden parancs${clockNote}`);
+    const nukes = list.filter((it) => it.role.startsWith('nuke'));
+    const nobles = list.filter((it) => it.role === 'noble_train' || it.role === 'noble');
+    if (nukes.length && nobles.length && Math.max(...nukes.map((it) => it.at)) >= Math.min(...nobles.map((it) => it.at))) {
+      add('warn', null, `${coord}: egy nuke a nemesek után vagy velük egyszerre érkezik${clockNote}`);
+    }
+    const minGap = Math.max(MIN_SAFE_GAP_MS, offset?.spread ?? 0);
+    for (let i = 1; i < list.length; i++) {
+      const [a, b] = [list[i - 1], list[i]];
+      if (a.order === null && b.order === null) continue; // két úton lévő: azon már nem lehet változtatni
+      const gap = b.at - a.at;
+      if (gap < minGap) {
+        add('warn', b.order ?? a.order, `${coord}: ${a.name} (${formatTimeMs(new Date(a.at))}) és ${b.name} (${formatTimeMs(new Date(b.at))}) között csak ${gap} ms${clockNote} – a sorrend felcserélődhet (biztonságos: ≥ ${minGap} ms)`);
+      }
     }
   }
 
